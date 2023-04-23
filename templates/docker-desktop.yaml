@@ -8,8 +8,8 @@ images:
 networks:
   - lima: shared
 mountType: virtiofs
-cpus: 1
-memory: 2G
+cpus: 2
+memory: 4G
 disk: 40G
 
 containerd:
@@ -53,45 +53,18 @@ provision:
         apt update   
       }
 
+      function install_docker {
+        echo >&2 "installing docker"
+
+        curl -fsSL https://get.docker.com | sh
+        systemctl disable --now docker
+        apt install -y uidmap dbus-user-session
+      }
+
       function install_net_tools {
         echo >&2 "installing network tools"
 
         apt install -y net-tools
-      }
-
-      function install_k3s {
-        echo >&2 "installing k3s"
-
-        apt install -y python3-pip jq
-        pip3 install yq
-
-        tls_san_args=""
-        for s in $EXTRA_SANS; do
-          tls_san_args="${tls_san_args} --tls-san $s"
-        done
-        mkdir -p /srv/k8s/csi/localstore
-        TOKEN=$(openssl rand -hex 20)
-        NODE_NAME=$(hostname -s)
-        NODE_IP=$(ifconfig lima0 | grep 'inet ' | awk '{print $2}')
-        curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server" sh -s - \
-          --token $TOKEN --cluster-init --write-kubeconfig-mode 0640 --node-name $HOSTNAME \
-          --cluster-cidr $CLUSTER_CIDR --service-cidr $SERVICE_CIDR \
-          --default-local-storage-path /srv/k8s/csi/localstore \
-          --tls-san ${NODE_IP} ${tls_san_args} \
-          --node-taint node-role.kubernetes.io/control-plane=true:NoSchedule \
-          --advertise-address ${NODE_IP} --kubelet-arg node-ip=${NODE_IP} \
-          --flannel-iface lima0 \
-          --disable traefik
-        sleep 2
-        sed -e "s|127.0.0.1|${NODE_IP}|g" /etc/rancher/k3s/k3s.yaml > /etc/rancher/k3s/k3s-remote.yaml
-        yq -i -y ".clusters[0].name = \"${KUBECONFIG_CLUSTER}\"" /etc/rancher/k3s/k3s-remote.yaml
-        yq -i -y ".contexts[0].name = \"${KUBECONFIG_CONTEXT}\"" /etc/rancher/k3s/k3s-remote.yaml
-        yq -i -y ".contexts[0].context.cluster = \"${KUBECONFIG_CLUSTER}\"" /etc/rancher/k3s/k3s-remote.yaml
-        yq -i -y ".[\"current-context\"] = \"${KUBECONFIG_CONTEXT}\"" /etc/rancher/k3s/k3s-remote.yaml
-        chmod 0640 /etc/rancher/k3s/k3s-remote.yaml
-
-        mkdir -p /etc/rancher/k3s
-        echo $NODE_IP >/etc/rancher/k3s/node-ip
       }
 
       # use static resolver, not domains from DHCP/host
@@ -109,9 +82,9 @@ provision:
         install_net_tools
       fi
 
-      # install k3s
-      if ! command -v kubectl >/dev/null 2>&1; then
-        install_k3s
+      # install docker
+      if ! command -v docker >/dev/null 2>&1; then
+        install_docker
       fi
 
       # finish system provisioning
@@ -121,6 +94,22 @@ provision:
       done
       rm -f /tmp/lima-system-provisioning.lock
 
+  - mode: user
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+
+      systemctl --user start dbus
+      dockerd-rootless-setuptool.sh install
+      docker context use rootless
+
+      # finish user provisioning
+      #   make sure the readiness probe has already created the file before attempting to remove the lock
+      while [ ! -f /tmp/lima-user-provisioning.lock ]; do
+        sleep 1
+      done
+      rm -f /tmp/lima-user-provisioning.lock
+
 probes:
   - mode: readiness
     description: wait for provisioning scripts to complete
@@ -128,30 +117,30 @@ probes:
       #!/bin/bash
       set -eux -o pipefail
       touch /tmp/lima-system-provisioning.lock
+      touch /tmp/lima-user-provisioning.lock
 
       # wait up to 10 minutes for system provisioning scripts to complete
       if ! timeout 600s bash -c "until [ ! -f /tmp/lima-system-provisioning.lock ]; do sleep 1; done"; then
         echo >&2 "one or more system provisioning scripts have not completed within timeout window"
         exit 1
       fi
+
+      # wait up to 10 minutes for user provisioning scripts to complete
+      if ! timeout 600s bash -c "until [ ! -f /tmp/lima-user-provisioning.lock ]; do sleep 1; done"; then
+        echo >&2 "one or more user provisioning scripts have not completed within timeout window"
+        exit 1
+      fi
     hint: |
       See /var/log/cloud-init-output.log in the guest.
 
+portForwards:
+  - guestSocket: "/run/user/{{.UID}}/docker.sock"
+    hostSocket: "{{.Dir}}/sock/docker.sock"
 message: |
-  To join worker nodes to the cluster, you'll need to retrieve the node token by running the command:
+  To run `docker` on the local host, run the following commands:
   -----
-  limactl shell {{.Name}} sudo cat /var/lib/rancher/k3s/server/node-token
-  -----
-
-  To retrieve the cluster IP for this node, run the command:
-  -----
-  limactl shell {{.Name}} sudo cat /etc/rancher/k3s/node-ip
+  docker context create lima-{{.Name}} --docker "host=unix://{{.Dir}}/sock/docker.sock"
+  docker context use lima-{{.Name}}
+  docker run hello-world
   -----
 
-  To access the cluster via its local IP address, run the commands:
-  -----
-  mkdir -p ~/.kube/config.d
-  limactl shell {{.Name}} sudo cat /etc/rancher/k3s/k3s-remote.yaml > ~/.kube/config.d/{{.Name}}
-  export KUBECONFIG=$HOME/.kube/config.d/{{.Name}}
-  kubectl get nodes
-  -----

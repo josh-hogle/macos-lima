@@ -1,0 +1,6 @@
+join_by() { local IFS="$1"; shift; echo "$*"; }
+
+kubeconfig() {
+    configs=($(find $HOME/.kube/config.d -type f))
+    export KUBECONFIG="$HOME/.kube/config:$(join_by : ${configs})"
+}

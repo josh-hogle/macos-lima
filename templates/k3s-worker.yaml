@@ -8,9 +8,9 @@ images:
 networks:
   - lima: shared
 mountType: virtiofs
-cpus: 1
-memory: 2G
-disk: 40G
+cpus: 4
+memory: 8G
+disk: 80G
 
 containerd:
   system: false
@@ -62,33 +62,12 @@ provision:
       function install_k3s {
         echo >&2 "installing k3s"
 
-        apt install -y python3-pip jq
-        pip3 install yq
-
-        tls_san_args=""
-        for s in $EXTRA_SANS; do
-          tls_san_args="${tls_san_args} --tls-san $s"
-        done
         mkdir -p /srv/k8s/csi/localstore
-        TOKEN=$(openssl rand -hex 20)
         NODE_NAME=$(hostname -s)
         NODE_IP=$(ifconfig lima0 | grep 'inet ' | awk '{print $2}')
-        curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server" sh -s - \
-          --token $TOKEN --cluster-init --write-kubeconfig-mode 0640 --node-name $HOSTNAME \
-          --cluster-cidr $CLUSTER_CIDR --service-cidr $SERVICE_CIDR \
-          --default-local-storage-path /srv/k8s/csi/localstore \
-          --tls-san ${NODE_IP} ${tls_san_args} \
-          --node-taint node-role.kubernetes.io/control-plane=true:NoSchedule \
-          --advertise-address ${NODE_IP} --kubelet-arg node-ip=${NODE_IP} \
-          --flannel-iface lima0 \
-          --disable traefik
-        sleep 2
-        sed -e "s|127.0.0.1|${NODE_IP}|g" /etc/rancher/k3s/k3s.yaml > /etc/rancher/k3s/k3s-remote.yaml
-        yq -i -y ".clusters[0].name = \"${KUBECONFIG_CLUSTER}\"" /etc/rancher/k3s/k3s-remote.yaml
-        yq -i -y ".contexts[0].name = \"${KUBECONFIG_CONTEXT}\"" /etc/rancher/k3s/k3s-remote.yaml
-        yq -i -y ".contexts[0].context.cluster = \"${KUBECONFIG_CLUSTER}\"" /etc/rancher/k3s/k3s-remote.yaml
-        yq -i -y ".[\"current-context\"] = \"${KUBECONFIG_CONTEXT}\"" /etc/rancher/k3s/k3s-remote.yaml
-        chmod 0640 /etc/rancher/k3s/k3s-remote.yaml
+        curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="agent" sh -s - \
+          --token $CLUSTER_TOKEN --server https://${MASTER_IP}:6443 --node-name $NODE_NAME \
+          --kubelet-arg node-ip=${NODE_IP} --flannel-iface lima0
 
         mkdir -p /etc/rancher/k3s
         echo $NODE_IP >/etc/rancher/k3s/node-ip
@@ -138,20 +117,7 @@ probes:
       See /var/log/cloud-init-output.log in the guest.
 
 message: |
-  To join worker nodes to the cluster, you'll need to retrieve the node token by running the command:
-  -----
-  limactl shell {{.Name}} sudo cat /var/lib/rancher/k3s/server/node-token
-  -----
-
   To retrieve the cluster IP for this node, run the command:
   -----
   limactl shell {{.Name}} sudo cat /etc/rancher/k3s/node-ip
-  -----
-
-  To access the cluster via its local IP address, run the commands:
-  -----
-  mkdir -p ~/.kube/config.d
-  limactl shell {{.Name}} sudo cat /etc/rancher/k3s/k3s-remote.yaml > ~/.kube/config.d/{{.Name}}
-  export KUBECONFIG=$HOME/.kube/config.d/{{.Name}}
-  kubectl get nodes
   -----
