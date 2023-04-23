@@ -67,6 +67,7 @@
 - k3s dashboard: https://kubernetes.io/docs/tasks/access-application-cluster/web-ui-dashboard/
 - komodor: https://app.komodor.com
 - metallb: https://metallb.universe.tf/installation/
+  - if `~/.lima/_config/networks.yaml` CIDR was changed for shared network, update IP address pool
 
 ## remove node from cluster
 
