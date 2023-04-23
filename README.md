@@ -22,7 +22,7 @@
 - stopping VM may result in panic for goroutine (BUG in upstream vz in MacOS Ventura); just CTRL+C and ignore it
 
 ## Run Docker from your MacOS Desktop (arm64 + amd64 containers on M1/M2)
-- create the VM: `limactl start --tty=false --name docker templates/docker-desktop.yaml`
+- create the VM: `limactl start --tty=false --name docker lima/templates/docker-desktop.yaml`
 - follow the instructions at the end to test Docker locally
 - test running an amd64-only container: `docker run --rm --name cassandra bitnami/cassandra:latest`
 - from another window run: `docker exec cassandra ps aux` 
@@ -44,7 +44,7 @@
       .env.EXTRA_SANS = \"${EXTRA_SANS}\" | \
       .env.KUBECONFIG_CONTEXT = \"${KUBECONFIG_CONTEXT}\" | \
       .env.KUBECONFIG_CLUSTER = \"${KUBECONFIG_CLUSTER}\"" \
-    templates/k3s-master.yaml
+    lima/templates/k3s-master.yaml
   ```
 - follow the instructions at the end to test connectivity to k8s cluster
 - alternate hosts method of connectivity, if desired
@@ -59,11 +59,18 @@
   for i in 1 2 3; do
     limactl start --tty=false --name k3s-worker-0$i \
       --set ".env.MASTER_IP = \"${MASTER_IP}\" | .env.CLUSTER_TOKEN = \"${CLUSTER_TOKEN}\"" \
-      templates/k3s-worker.yaml
+      lima/templates/k3s-worker.yaml
   done
   ```
 
-# workloads
+## workloads
 - k3s dashboard: https://kubernetes.io/docs/tasks/access-application-cluster/web-ui-dashboard/
 - komodor: https://app.komodor.com
 - metallb: https://metallb.universe.tf/installation/
+
+## remove node from cluster
+
+- Remove the node: `kubectl drain <node-name>`
+  - You might have to ignore daemonsets and local-data in the machine:
+    `kubectl drain <node-name> --ignore-daemonsets --delete-local-data`
+- Run: `kubectl delete node <node-name>`
